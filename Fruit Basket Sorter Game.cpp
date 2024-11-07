@@ -12,7 +12,6 @@
 #include <chrono>
 #include <random>
 #include <json/json.hpp> // Add JSON support for save data
-#include <chrono>
 #include <iomanip>
 #include <sstream>
 #include <unordered_map>
@@ -214,10 +213,11 @@ public:
     void addEffect(const std::string& type, float x, float y) {
         if (type == "explosion") {
             for (int i = 0; i < 20; i++) {
+                // 初始化粒子
                 particles.push_back(new Particle(x, y, randomColor()));
             }
         }
-        // Add more effect types here
+        // 添加更多效果類型
     }
     
     void update(float dt) {
@@ -347,12 +347,14 @@ public:
 
 private:
     void loadSounds() {
-        sounds["correct"] = Mix_LoadWAV("sounds/correct.wav");
-        sounds["wrong"] = Mix_LoadWAV("sounds/wrong.wav");
-        sounds["click"] = Mix_LoadWAV("sounds/click.wav");
-        sounds["game_over"] = Mix_LoadWAV("sounds/game_over.wav");
-        sounds["background"] = Mix_LoadWAV("sounds/background.wav");
-        if (sounds["background"]) {
+        sounds["correct"] = Mix_LoadWAV("assets/sounds/correct.wav");
+        sounds["wrong"] = Mix_LoadWAV("assets/sounds/wrong.wav");
+        sounds["click"] = Mix_LoadWAV("assets/sounds/click.wav");
+        sounds["game_over"] = Mix_LoadWAV("assets/sounds/game_over.wav");
+        sounds["background"] = Mix_LoadWAV("assets/sounds/background.wav");
+        if (!sounds["background"]) {
+            std::cerr << "Background sound failed to load: " << Mix_GetError() << std::endl;
+        } else {
             Mix_VolumeChunk(sounds["background"], MIX_MAX_VOLUME / 2);
             Mix_PlayChannel(-1, sounds["background"], -1);
         }
@@ -381,7 +383,8 @@ public:
     void draw(SDL_Renderer* renderer) {
         int alpha = static_cast<int>(255 * lifetime);
         if (alpha > 0) {
-            SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, alpha);
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); // 設定混合模式
+            SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b); // 移除 alpha
             SDL_Rect rect = {static_cast<int>(x - size), static_cast<int>(y - size), static_cast<int>(size * 2), static_cast<int>(size * 2)};
             SDL_RenderFillRect(renderer, &rect);
         }
@@ -735,9 +738,12 @@ public:
 
 private:
     void loadFonts() {
-        fonts["regular"] = TTF_OpenFont("fonts/Roboto-Regular.ttf", 24);
-        fonts["bold"] = TTF_OpenFont("fonts/Roboto-Bold.ttf", 24);
-        fonts["light"] = TTF_OpenFont("fonts/Roboto-Light.ttf", 24);
+        fonts["regular"] = TTF_OpenFont("assets/fonts/Roboto-Regular.ttf", 24);
+        fonts["bold"] = TTF_OpenFont("assets/fonts/Roboto-Bold.ttf", 24);
+        fonts["light"] = TTF_OpenFont("assets/fonts/Roboto-Light.ttf", 24);
+        if (!fonts["regular"] || !fonts["bold"] || !fonts["light"]) {
+            std::cerr << "Failed to load fonts: " << TTF_GetError() << std::endl;
+        }
     }
 
     void drawBlurredBackground() {
@@ -780,7 +786,7 @@ public:
         }
         window = SDL_CreateWindow("Fruit Basket Sorter Game", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH, HEIGHT, SDL_WINDOW_SHOWN);
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-        font = TTF_OpenFont("arial.ttf", 36);
+        font = TTF_OpenFont("assets/fonts/arial.ttf", 36);
         sound_manager = new SoundManager();
         resetGame();
         createButtons();
@@ -789,6 +795,8 @@ public:
         level = 1;
         difficulty_multiplier = 1.0f;
         initializeAchievements();
+        ui_manager = new UIManager(renderer);
+        ui_manager->createUI();
     }
 
     ~Game() {
@@ -798,6 +806,7 @@ public:
         TTF_Quit();
         SDL_Quit();
         delete sound_manager;
+        delete ui_manager;
     }
 
     void run() {
@@ -833,9 +842,9 @@ private:
     }
 
     void createButtons() {
-        start_button = new Button(WIDTH / 2 - 100, HEIGHT / 2 - 50, 200, 50, "Start Game", FRUIT_THEME.primary);
-        quit_button = new Button(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Quit", FRUIT_THEME.error);
-        play_again_button = new Button(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Play Again", FRUIT_THEME.primary);
+        start_button = new ModernButton(WIDTH / 2 - 100, HEIGHT / 2 - 50, 200, 50, "Start Game", FRUIT_THEME.primary);
+        quit_button = new ModernButton(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Quit", FRUIT_THEME.error);
+        play_again_button = new ModernButton(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Play Again", FRUIT_THEME.primary);
     }
 
     void initializeFruits() {
@@ -865,6 +874,7 @@ private:
     }
 
     void drawMenu() {
+        ui_manager->drawModernMenu(); // 使用 UIManager 繪製現代化菜單
         SDL_Surface* title_surface = TTF_RenderText_Solid(font, "Fruit Basket Sorter", {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
         SDL_Texture* title_texture = SDL_CreateTextureFromSurface(renderer, title_surface);
         int title_width, title_height;
