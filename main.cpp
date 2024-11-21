@@ -1,5 +1,7 @@
-#include <SDL.h>
-#include <SDL_ttf.h> 
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
+#include <SDL2/SDL_image.h>
+#include <SDL2/SDL2_gfxPrimitives.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -16,8 +18,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <memory>
-#include <SDL_image.h> // Add missing header file
-#include <SDL2/SDL2_gfxPrimitives.h>
 
 // Add new game states
 enum GameState {
@@ -371,11 +371,11 @@ public:
         active_powerups[type] = 10.0f; // 10 seconds duration
     }
     
-    void update(float dt, Game& game) {
+    void update(float dt, std::function<void(const std::string&)> activateEffect, std::function<void(const std::string&)> deactivateEffect) {
         for (auto it = active_powerups.begin(); it != active_powerups.end();) {
             it->second -= dt;
             if (it->second <= 0) {
-                deactivatePowerUp(it->first, game);
+                deactivateEffect(it->first);
                 it = active_powerups.erase(it);
             } else {
                 ++it;
@@ -385,21 +385,6 @@ public:
     
     bool isPowerUpActive(const std::string& type) const {
         return active_powerups.find(type) != active_powerups.end();
-    }
-
-    void activatePowerUp(const std::string& type, Game& game) {
-        active_powerups[type] = 10.0f; // 10 seconds duration
-        if (type == "double_points") {
-            game.score_multiplier *= 2;
-        }
-        // Implement other power-up effects
-    }
-
-    void deactivatePowerUp(const std::string& type, Game& game) {
-        if (type == "double_points") {
-            game.score_multiplier /= 2;
-        }
-        // Revoke other power-up effects
     }
 
 private:
@@ -833,14 +818,20 @@ public:
 
     void drawTopBar() {
         // Implement drawTopBar
+        // Example: Draw a simple top bar
+        SDL_Rect top_bar = {0, 0, WIDTH, 50};
+        SDL_SetRenderDrawColor(renderer, DARK_PRIMARY.r, DARK_PRIMARY.g, DARK_PRIMARY.b, DARK_PRIMARY.a);
+        SDL_RenderFillRect(renderer, &top_bar);
     }
 
     void drawCurrentView() {
         // Implement drawCurrentView
+        // Example: Depending on current view, draw relevant UI
     }
 
     void drawLogo() {
         // Implement drawLogo
+        // Example: Load and render a logo texture
     }
 
     void drawBottomBar() {
@@ -1082,7 +1073,8 @@ public:
             exit(1);
         }
         // Initialize other members
-        current_state = std::make_unique<MenuState>();
+        ui_manager = std::make_unique<UIManager>(renderer.get());
+        current_state = std::make_unique<MenuState>(*ui_manager);
         hud_manager = std::make_unique<HUDManager>(renderer.get());
         // ...existing code...
     }
@@ -1159,6 +1151,7 @@ private:
     std::unique_ptr<TTF_Font, SDL_Deleter> font;
     bool running;
     std::unique_ptr<State> current_state;
+    std::unique_ptr<UIManager> ui_manager;
 };
 
 // Add Color to SDL_Color conversion function
@@ -1178,8 +1171,8 @@ protected:
 
 class MenuState : public State {
 public:
-    MenuState() {
-        // Initialize buttons
+    MenuState(UIManager& ui_manager) : ui_manager(ui_manager) { // Pass UIManager reference
+        // Initialize buttons using ui_manager.getFont()
         start_button = std::make_unique<ModernButton>(WIDTH / 2 - 100, HEIGHT / 2 - 50, 200, 50, "Start Game", FRUIT_THEME.primary);
         quit_button = std::make_unique<ModernButton>(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Quit", FRUIT_THEME.error);
     }
@@ -1205,6 +1198,9 @@ public:
     }
 
     void draw(Game& game) override {
+        // Use ui_manager.getFont()
+        ui_manager.draw();
+        // ...existing code...
         SDL_SetRenderDrawColor(game.getRenderer(), FRUIT_THEME.background.r, FRUIT_THEME.background.g, FRUIT_THEME.background.b, 255);
         SDL_RenderClear(game.getRenderer());
 
@@ -1226,12 +1222,12 @@ public:
 private:
     std::unique_ptr<ModernButton> start_button;
     std::unique_ptr<ModernButton> quit_button;
+    UIManager& ui_manager;
 };
 
-// Define new PlayingState, move game logic into it
 class PlayingState : public State {
 public:
-    PlayingState(Game& game) : game(game), score(0) {
+    PlayingState(Game& game) : game(game), score(0) { // Initialize game here
         initializeFruits();
         initializeBaskets();
     }
@@ -1382,7 +1378,7 @@ private:
 // Define GameOverState
 class GameOverState : public State {
 public:
-    GameOverState(Game& game, int final_score) : score(final_score) {
+    GameOverState(Game& game, int final_score, UIManager& ui_manager) : score(final_score), ui_manager(ui_manager) {
         // Initialize button
         play_again_button = std::make_unique<ModernButton>(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Play Again", FRUIT_THEME.primary);
     }
@@ -1403,6 +1399,9 @@ public:
     }
 
     void draw(Game& game) override {
+        // Use ui_manager.getFont()
+        ui_manager.draw();
+        // ...existing code...
         SDL_SetRenderDrawColor(game.getRenderer(), FRUIT_THEME.background.r, FRUIT_THEME.background.g, FRUIT_THEME.background.b, 255);
         SDL_RenderClear(game.getRenderer());
 
@@ -1424,6 +1423,7 @@ public:
 private:
     int score;
     std::unique_ptr<ModernButton> play_again_button;
+    UIManager& ui_manager;
 };
 
 // Add logging functionality
