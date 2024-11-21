@@ -15,6 +15,8 @@
 #include <iomanip>
 #include <sstream>
 #include <unordered_map>
+#include <memory>
+#include <SDL_image.h> // 添加缺少的頭文件
 
 // Add new game states
 enum GameState {
@@ -264,24 +266,33 @@ private:
 // Add special effects manager
 class EffectManager {
 public:
+    ~EffectManager() {
+        for (auto particle : particles) {
+            delete particle;
+        }
+        particles.clear();
+    }
+
     void addEffect(const std::string& type, float x, float y) {
         if (type == "explosion") {
-            for (int i = 0; i < 20; i++) {
+            for (int i = 0; i < 20; ++i) {
                 particles.push_back(new Particle(x, y, randomColor()));
             }
-            // 添加更多效果類型
         }
+        // 添加更多效果類型
     }
 
     void update(float dt) {
-        particles.erase(
-            std::remove_if(particles.begin(), particles.end(),
-                [dt](Particle* p) {
-                    p->update(dt);
-                    return p->isDead();
-                }),
-            particles.end()
-        );
+        auto it = particles.begin();
+        while (it != particles.end()) {
+            (*it)->update(dt);
+            if ((*it)->isDead()) {
+                delete *it;
+                it = particles.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     void draw(SDL_Renderer* renderer) {
@@ -325,6 +336,10 @@ public:
 
     void saveHighScores() {
         // 實作 saveHighScores
+        std::ofstream file("highscores.dat");
+        for (const auto& score : high_scores) {
+            file << score << std::endl;
+        }
     }
 
 private:
@@ -346,10 +361,11 @@ public:
         active_powerups[type] = 10.0f; // 10 seconds duration
     }
     
-    void update(float dt) {
+    void update(float dt, Game& game) {
         for (auto it = active_powerups.begin(); it != active_powerups.end();) {
             it->second -= dt;
             if (it->second <= 0) {
+                deactivatePowerUp(it->first, game);
                 it = active_powerups.erase(it);
             } else {
                 ++it;
@@ -359,6 +375,21 @@ public:
     
     bool isPowerUpActive(const std::string& type) const {
         return active_powerups.find(type) != active_powerups.end();
+    }
+
+    void activatePowerUp(const std::string& type, Game& game) {
+        active_powerups[type] = 10.0f; // 有效時間 10 秒
+        if (type == "double_points") {
+            game.score_multiplier *= 2;
+        }
+        // 實作其他 power-up 效果
+    }
+
+    void deactivatePowerUp(const std::string& type, Game& game) {
+        if (type == "double_points") {
+            game.score_multiplier /= 2;
+        }
+        // 撤銷其他 power-up 效果
     }
 
 private:
@@ -431,14 +462,29 @@ private:
 
     void drawShadow(SDL_Renderer* renderer) {
         // 實作 drawShadow
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 50);
+        SDL_Rect shadow_rect = {rect.x + 5, rect.y + 5, rect.w, rect.h};
+        drawRoundedRect(renderer, shadow_rect, corner_radius, {0, 0, 0, 50});
     }
 
     void drawRoundedRect(SDL_Renderer* renderer, SDL_Rect rect, int radius, Color color) {
         // 實作 drawRoundedRect
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        // Draw rounded rectangle (simplified)
+        SDL_RenderFillRect(renderer, &rect);
     }
 
     void drawText(SDL_Renderer* renderer, TTF_Font* font, const std::string& text, SDL_Color color) {
         // 實作 drawText
+        SDL_Surface* text_surface = TTF_RenderText_Solid(font, text.c_str(), color);
+        SDL_Texture* text_texture = SDL_CreateTextureFromSurface(renderer, text_surface);
+        int text_width, text_height;
+        SDL_QueryTexture(text_texture, NULL, NULL, &text_width, &text_height);
+        SDL_Rect text_rect = {rect.x + (rect.w - text_width) / 2, rect.y + (rect.h - text_height) / 2, text_width, text_height};
+        SDL_RenderCopy(renderer, text_texture, NULL, &text_rect);
+        SDL_FreeSurface(text_surface);
+        SDL_DestroyTexture(text_texture);
     }
 };
 
@@ -526,7 +572,7 @@ struct PlayerStats {
 // Add daily challenge system
 class DailyChallenge {
 public:
-    DailyChallenge() {
+    DailyChallenge() : completed(false), current_challenge(""), last_update("") {
         loadChallenges();
         checkAndUpdateDaily();
     }
@@ -571,13 +617,13 @@ class EnhancedPowerUp : public PowerUp {
 public:
     EnhancedPowerUp(const std::string& type, float duration, float strength)
         : PowerUp(type), strength(strength) {
-        effects["double_points"] = [](Game* game) { game->multiplyScore(2.0f); };
-        effects["slow_motion"] = [](Game* game) { game->setTimeScale(0.5f); };
-        effects["fruit_rain"] = [](Game* game) { game->spawnBonusFruits(); };
-        effects["combo_booster"] = [](Game* game) { game->boostCombo(); };
+        effects["double_points"] = [](Game& game) { game.multiplyScore(2.0f); };
+        effects["slow_motion"] = [](Game& game) { game.setTimeScale(0.5f); };
+        effects["fruit_rain"] = [](Game& game) { game.spawnBonusFruits(); };
+        effects["combo_booster"] = [](Game& game) { game.boostCombo(); };
     }
     
-    void applyEffect(Game* game) {
+    void applyEffect(Game& game) {
         if (effects.find(getType()) != effects.end()) {
             effects[getType()](game);
         }
@@ -585,52 +631,49 @@ public:
 
 private:
     float strength;
-    std::map<std::string, std::function<void(Game*)>> effects;
+    std::map<std::string, std::function<void(Game&)>> effects;
 };
 
 class FallingFruit {
 public:
     FallingFruit(float x, float y, const Fruit& fruit_type) 
         : x(x), y(y), fruit(fruit_type), falling(false), 
-          rotation(0), fall_speed(200), special(rand() % 10 == 0) {}
+          rotation(0), fall_speed(200), special(rand() % 10 == 0) {
+        horizontal_speed = (rand() % 200 - 100) / 100.0f; // -1.0 到 1.0 之間的速度
+        rotation_speed = (rand() % 100 - 50); // 隨機旋轉速度
+    }
 
     void draw(SDL_Renderer* renderer) {
-        // Replace train drawing with fruit drawing
-        SDL_SetRenderDrawColor(renderer, fruit.color.r, fruit.color.g, fruit.color.b, 255);
-        
-        // Draw fruit as a circle
-        const int radius = 20;
-        for(int w = 0; w < radius * 2; w++) {
-            for(int h = 0; h < radius * 2; h++) {
-                int dx = radius - w;
-                int dy = radius - h;
-                if((dx*dx + dy*dy) <= (radius * radius)) {
-                    SDL_RenderDrawPoint(renderer, x + w, y + h);
-                }
-            }
+        if (!texture) {
+            texture = loadTexture(renderer, fruit.sprite_path);
+            if (!texture) return;
         }
-
-        // Draw shine effect for special fruits
-        if (special) {
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 128);
-            SDL_Rect shine = {(int)x + 5, (int)y + 5, 10, 10};
-            SDL_RenderFillRect(renderer, &shine);
-        }
+        SDL_Rect dest_rect = { static_cast<int>(x), static_cast<int>(y), width, height };
+        SDL_RenderCopyEx(renderer, texture, nullptr, &dest_rect, rotation, nullptr, SDL_FLIP_NONE);
     }
 
     void update(float dt) {
         if (falling) {
+            x += horizontal_speed * dt;
             y += fall_speed * dt;
-            rotation += 90 * dt; // Rotate while falling
+            rotation += rotation_speed * dt;
         }
     }
 
     float getX() const { return x; } // 加入 getX 成員函數
+    float getY() const { return y; } // 加入 getY 成員函數
     const Fruit& getFruit() const { return fruit; }
     bool isFalling() const { return falling; }      // 加入 isFalling 函式
     void setFalling(bool value) { falling = value; } // 加入 setFalling 函式
 
     // ... keep other necessary methods ...
+
+    ~FallingFruit() {
+        if (texture) {
+            SDL_DestroyTexture(texture);
+            texture = nullptr;
+        }
+    }
 
 private:
     float x, y;
@@ -639,6 +682,11 @@ private:
     float rotation;
     float fall_speed;
     bool special;
+    SDL_Texture* texture = nullptr; // Add texture member
+    int width = 40; // Add width member
+    int height = 40; // Add height member
+    float horizontal_speed; // 定義 horizontal_speed
+    float rotation_speed; // 定義 rotation_speed
 };
 
 class Basket {
@@ -678,6 +726,10 @@ private:
 // Add new Tutorial system
 class TutorialManager {
 public:
+    TutorialManager() : current_step(0) {
+        loadSteps();
+    }
+
     void startTutorial() {
         current_step = 0;
         steps = {
@@ -698,6 +750,15 @@ private:
     };
     std::vector<TutorialStep> steps;
     size_t current_step;
+
+    void loadSteps() {
+        steps = {
+            {"Welcome", "Welcome to Fruit Sorter! Let's learn how to play."},
+            {"Basic Matching", "Click the basket that matches the fruit color."},
+            {"Combos", "Match fruits quickly to build combo multipliers!"},
+            {"Power-ups", "Collect special fruits for powerful bonuses!"}
+        };
+    }
 };
 
 // Add new UI manager
@@ -732,10 +793,13 @@ public:
 
     void createUI() {
         // 實作 createUI
+        // Initialize UI elements
     }
 
     void drawBackground() {
         // 實作 drawBackground
+        SDL_SetRenderDrawColor(renderer, 245, 245, 245, 255);
+        SDL_RenderClear(renderer);
     }
 
     void drawTopBar() {
@@ -768,6 +832,9 @@ public:
 
     void drawRoundedRect(SDL_Renderer* renderer, SDL_Rect rect, int radius, Color color) {
         // 實作 drawRoundedRect
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        // Draw rounded rectangle (simplified)
+        SDL_RenderFillRect(renderer, &rect);
     }
 
 private:
@@ -793,695 +860,154 @@ private:
     std::vector<ModernButton*> menu_buttons;
 };
 
+class MenuManager {
+public:
+    MenuManager(SDL_Renderer* renderer) : renderer(renderer) {
+        // ...初始化菜單...
+    }
+    void draw() {
+        // ...繪製菜單...
+    }
+    void handleEvent(SDL_Event& event) {
+        // ...處理菜單事件...
+    }
+private:
+    SDL_Renderer* renderer;
+    
+};
+
+class HUDManager {
+public:
+    HUDManager(SDL_Renderer* renderer) : renderer(renderer) {
+        // ...初始化 HUD...
+    }
+    void draw() {
+        // ...繪製 HUD...
+    }
+private:
+    SDL_Renderer* renderer;
+    
+};
+
 class Game {
 public:
-    Game() : state(MENU), score(0), current_fruit_index(0), all_fruits_falling(false) {
+    Game() : window(nullptr), renderer(nullptr), font(nullptr), running(true) {
+        // 初始化 SDL
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
-            std::cerr << "SDL could not initialize! SDL Error: " << SDL_GetError() << std::endl;
+            std::cerr << "SDL 初始化失敗！錯誤：" << SDL_GetError() << std::endl;
+            exit(1);
         }
+        // 初始化 TTF
         if (TTF_Init() == -1) {
             std::cerr << "TTF_Init: " << TTF_GetError() << std::endl;
+            exit(1);
         }
+        // 初始化 SDL_image
+        int imgFlags = IMG_INIT_PNG;
+        if (!(IMG_Init(imgFlags) & imgFlags)) {
+            std::cerr << "SDL_image 初始化失敗！錯誤：" << IMG_GetError() << std::endl;
+            exit(1);
+        }
+        // 創建窗口
         window = SDL_CreateWindow("Fruit Basket Sorter Game", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH, HEIGHT, SDL_WINDOW_SHOWN);
+        if (!window) {
+            std::cerr << "窗口創建失敗！錯誤：" << SDL_GetError() << std::endl;
+            exit(1);
+        }
+        // 創建渲染器
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-        font = TTF_OpenFont("assets/fonts/arial.ttf", 36);
-        resetGame();
-        createButtons();
-        current_mode = GameMode::CLASSIC;
-        time_remaining = 60.0f;
-        level = 1;
-        difficulty_multiplier = 1.0f;
-        initializeAchievements();
-        ui_manager = new UIManager(renderer);
-        ui_manager->createUI();
+        if (!renderer) {
+            std::cerr << "渲染器創建失敗！錯誤：" << SDL_GetError() << std::endl;
+            exit(1);
+        }
+        // 加載字體
+        font = TTF_OpenFont("assets/fonts/Roboto-Regular.ttf", 24);
+        if (!font) {
+            std::cerr << "字體加載失敗！錯誤：" << TTF_GetError() << std::endl;
+            exit(1);
+        }
+        // 初始化其他成員變量
+        current_state = std::make_unique<MenuState>();
+        // ...existing code...
     }
 
     ~Game() {
-        TTF_CloseFont(font);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
+        // 資源清理
+        if (font) {
+            TTF_CloseFont(font);
+            font = nullptr;
+        }
+        if (renderer) {
+            SDL_DestroyRenderer(renderer);
+            renderer = nullptr;
+        }
+        if (window) {
+            SDL_DestroyWindow(window);
+            window = nullptr;
+        }
         TTF_Quit();
+        IMG_Quit();
         SDL_Quit();
-        delete ui_manager;
     }
 
     void run() {
-        bool running = true;
+        SDL_Event e;
+        float dt = 0.0f;
+        Uint32 last_time = SDL_GetTicks();
         while (running) {
-            float dt = 1.0f / 60.0f;
-            SDL_Event e;
+            Uint32 current_time = SDL_GetTicks();
+            dt = (current_time - last_time) / 1000.0f;
+            last_time = current_time;
+
             while (SDL_PollEvent(&e) != 0) {
                 if (e.type == SDL_QUIT) {
                     running = false;
-                } else if (e.type == SDL_MOUSEBUTTONDOWN) {
-                    int x, y;
-                    SDL_GetMouseState(&x, &y);
-                    if (!handleClick(x, y)) {
-                        running = false;
-                    }
+                } else {
+                    handleEvent(e);
                 }
             }
             update(dt);
             draw();
-            SDL_Delay(1000 / 60);
         }
     }
 
-    void spawnBonusFruits() {
-        for (int i = 0; i < 5; i++) {
-            // Spawn bonus fruits with special effects
+    void handleEvent(SDL_Event& event) {
+        if (current_state) {
+            current_state->handleEvent(*this, event);
         }
     }
 
-private:
-    void resetGame() {
-        falling_fruits.clear();
-        baskets.clear();
-        score = 0;
-        current_fruit_index = 0;
-        all_fruits_falling = false;
-        initializeFruits();
-    }
-
-    void createButtons() {
-        start_button = new ModernButton(WIDTH / 2 - 100, HEIGHT / 2 - 50, 200, 50, "Start Game", FRUIT_THEME.primary);
-        quit_button = new ModernButton(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Quit", FRUIT_THEME.error);
-        play_again_button = new ModernButton(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Play Again", FRUIT_THEME.primary);
-    }
-
-    void initializeFruits() {
-        for (int i = 0; i < 10; ++i) {
-            Fruit fruit = FRUITS[rand() % FRUITS.size()];
-            int x = i * 80;
-            falling_fruits.push_back(new FallingFruit(x, 0, fruit));
-        }
-        for (int i = 0; i < FRUITS.size(); ++i) {
-            baskets.push_back(new Basket(250 + i * 100, 500, FRUITS[i]));
+    void update(float dt) {
+        if (current_state) {
+            current_state->update(*this, dt);
         }
     }
 
     void draw() {
-        SDL_SetRenderDrawColor(renderer, FRUIT_THEME.background.r, FRUIT_THEME.background.g, FRUIT_THEME.background.b, 255);
-        SDL_RenderClear(renderer);
-
-        if (state == MENU) {
-            drawMenu();
-        } else if (state == PLAYING) {
-            drawGame();
-        } else if (state == GAME_OVER) {
-            drawGameOver();
-        }
-
-        SDL_RenderPresent(renderer);
-    }
-
-    void drawMenu() {
-        ui_manager->drawModernMenu(); // 使用 UIManager 繪製現代化菜單
-        SDL_Surface* title_surface = TTF_RenderText_Solid(font, "Fruit Basket Sorter", {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
-        SDL_Texture* title_texture = SDL_CreateTextureFromSurface(renderer, title_surface);
-        int title_width, title_height;
-        SDL_QueryTexture(title_texture, NULL, NULL, &title_width, &title_height);
-        SDL_Rect title_rect = {WIDTH / 2 - title_width / 2, HEIGHT / 4, title_width, title_height};
-        SDL_RenderCopy(renderer, title_texture, NULL, &title_rect);
-        SDL_FreeSurface(title_surface);
-        SDL_DestroyTexture(title_texture);
-
-        start_button->draw(renderer, font);
-        quit_button->draw(renderer, font);
-    }
-
-    void drawGame() {
-        for (auto& fruit : falling_fruits) {
-            if (!fruit->isFalling()) {
-                fruit->draw(renderer);
-            }
-        }
-        for (auto& basket : baskets) {
-            basket->draw(renderer);
-        }
-
-        SDL_Surface* score_surface = TTF_RenderText_Solid(font, ("Score: " + std::to_string(score)).c_str(), {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
-        SDL_Texture* score_texture = SDL_CreateTextureFromSurface(renderer, score_surface);
-        int score_width, score_height;
-        SDL_QueryTexture(score_texture, NULL, NULL, &score_width, &score_height);
-        SDL_Rect score_rect = {10, 10, score_width, score_height};
-        SDL_RenderCopy(renderer, score_texture, NULL, &score_rect);
-        SDL_FreeSurface(score_surface);
-        SDL_DestroyTexture(score_texture);
-        drawPowerUps();
-        drawCombo();
-        drawTimer();
-        effect_manager.draw(renderer);
-    }
-
-    void drawGameOver() {
-        SDL_Surface* game_over_surface = TTF_RenderText_Solid(font, "Game Over!", {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
-        SDL_Texture* game_over_texture = SDL_CreateTextureFromSurface(renderer, game_over_surface);
-        int game_over_width, game_over_height;
-        SDL_QueryTexture(game_over_texture, NULL, NULL, &game_over_width, &game_over_height);
-        SDL_Rect game_over_rect = {WIDTH / 2 - game_over_width / 2, HEIGHT / 4, game_over_width, game_over_height};
-        SDL_RenderCopy(renderer, game_over_texture, NULL, &game_over_rect);
-        SDL_FreeSurface(game_over_surface);
-        SDL_DestroyTexture(game_over_texture);
-
-        SDL_Surface* score_surface = TTF_RenderText_Solid(font, ("Final Score: " + std::to_string(score)).c_str(), {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
-        SDL_Texture* score_texture = SDL_CreateTextureFromSurface(renderer, score_surface);
-        int score_width, score_height;
-        SDL_QueryTexture(score_texture, NULL, NULL, &score_width, &score_height);
-        SDL_Rect score_rect = {WIDTH / 2 - score_width / 2, HEIGHT / 3, score_width, score_height};
-        SDL_RenderCopy(renderer, score_texture, NULL, &score_rect);
-        SDL_FreeSurface(score_surface);
-        SDL_DestroyTexture(score_texture);
-
-        play_again_button->draw(renderer, font);
-    }
-
-    bool handleClick(int x, int y) {
-        if (state == MENU) {
-            if (start_button->isClicked(x, y)) {
-                state = PLAYING;
-                resetGame();
-            } else if (quit_button->isClicked(x, y)) {
-                return false;
-            }
-        } else if (state == PLAYING) {
-            for (auto& basket : baskets) {
-                if (basket->isClicked(x, y)) {
-                    if (current_fruit_index < falling_fruits.size()) {
-                        FallingFruit* current_fruit = falling_fruits[current_fruit_index];
-                        if (basket->getFruit().type == current_fruit->getFruit().type) {
-                            current_fruit->setFalling(true);
-                            score++;
-                            current_fruit_index++;
-                            if (current_fruit_index >= falling_fruits.size()) {
-                                all_fruits_falling = true;
-                            }
-                        }
-                    }
-                }
-            }
-        } else if (state == GAME_OVER) {
-            if (play_again_button->isClicked(x, y)) {
-                state = PLAYING;
-                resetGame();
-            } else if (quit_button->isClicked(x, y)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    void update(float dt) {
-        if (state == PLAYING) {
-            updateTimeAttack(dt);
-            combo_system.update(dt);
-            effect_manager.update(dt);
-            powerup_manager.update(dt);
-            for (auto& fruit : falling_fruits) {
-                if (fruit->isFalling()) {
-                    fruit->update(dt);
-                }
-            }
-            if (all_fruits_falling && std::all_of(falling_fruits.begin(), falling_fruits.end(), [](FallingFruit* fruit) { return !fruit->isFalling(); })) {
-                state = GAME_OVER;
-            }
+        if (current_state) {
+            current_state->draw(*this);
         }
     }
 
-    void initializeAchievements() {
-        achievements = {
-            {"Fruit Master", "Score 1000 points", false, 0, 1000},
-            {"Combo King", "Get a 10x combo", false, 0, 10},
-            {"Speed Demon", "Complete level in 30 seconds", false, 0, 1}
-        };
-    }
-    
-    void checkAchievements() {
-        for (auto& achievement : achievements) {
-            if (!achievement.unlocked) {
-                if (achievement.name == "Fruit Master" && score >= 1000) {
-                    achievement.unlocked = true;
-                }
-                // Add more achievement checks
-            }
-        }
-    }
-    
-    void updateTimeAttack(float dt) {
-        if (current_mode == GameMode::TIME_ATTACK) {
-            time_remaining -= dt;
-            if (time_remaining <= 0) {
-                state = GAME_OVER;
-            }
-        }
-    }
-    
-    void increaseDifficulty() {
-        difficulty_multiplier += 0.1f;
-        // Adjust game parameters based on difficulty
-    }
-    
-    void spawnPowerUp() {
-        if (rand() % 100 < 5) { // 5% chance
-            std::vector<std::string> types = {"double_points", "slow_motion", "multi_fruit"};
-            powerup_manager.addPowerUp(types[rand() % types.size()]);
-        }
+    void changeState(std::unique_ptr<State> new_state) {
+        current_state = std::move(new_state);
     }
 
-    void drawPowerUps() {
-        // Draw active power-ups
-    }
-    
-    void drawCombo() {
-        // Draw combo multiplier
-    }
-    
-    void drawTimer() {
-        if (current_mode == GameMode::TIME_ATTACK) {
-            // Draw remaining time
-        }
+    void quit() {
+        running = false;
     }
 
-    // Add new member variables
-    Difficulty difficulty;
-    PlayerStats stats;
-    DailyChallenge daily_challenge;
-    std::map<std::string, Animation*> animations;
-    float time_scale;
-    bool tutorial_completed;
-    std::string player_name;
-    MenuState menu_state;
-    std::vector<LevelData> levels;
-    PlayerProfile player_profile;
-    TutorialManager tutorial;
-    
-    // Add new methods
-    void saveProgress() {
-        nlohmann::json save_data;
-        stats.serialize(save_data["stats"]);
-        save_data["tutorial_completed"] = tutorial_completed;
-        save_data["high_scores"] = high_score_manager.getHighScores();
-        
-        std::ofstream file("save.json");
-        file << save_data.dump(4);
-    }
-    
-    void loadProgress() {
-        std::ifstream file("save.json");
-        if (file.is_open()) {
-            nlohmann::json save_data;
-            file >> save_data;
-            stats.deserialize(save_data["stats"]);
-            tutorial_completed = save_data["tutorial_completed"];
-            // Load high scores
-        }
+    SDL_Renderer* getRenderer() const { return renderer; }
 
-        std::ifstream file("player_profile.json");
-        if (file.is_open()) {
-            nlohmann::json j;
-            file >> j;
-            player_profile.deserialize(j); // 使用 deserialize 來讀取資料
-        }
-    }
-    
-    void updateDifficulty() {
-        switch (difficulty) {
-            case Difficulty::EASY:
-                fall_speed_multiplier = 0.7f;
-                score_multiplier = 1.0f;
-                break;
-            case Difficulty::HARD:
-                fall_speed_multiplier = 1.3f;
-                score_multiplier = 1.5f;
-                break;
-            case Difficulty::EXPERT:
-                fall_speed_multiplier = 1.5f;
-                score_multiplier = 2.0f;
-                spawnSpecialFruits();
-                break;
-        }
-    }
-    
-    void runTutorial() {
-        if (!tutorial_completed) {
-            // Show tutorial steps
-            tutorial_steps = {
-                "Welcome to Fruit Basket Sorter!",
-                "Match fruits with their corresponding baskets",
-                "Build combos for bonus points",
-                "Watch out for special fruits!"
-            };
-            // ... tutorial implementation
-        }
-    }
-    
-    void showLeaderboard() {
-        // Display top scores with player names
-    }
+    // ...existing code...
 
-    void initializeLevels() {
-        levels = {
-            {100, 1.0f, 10, 0.1f, {"double_points"}},
-            {250, 1.2f, 15, 0.15f, {"double_points", "slow_motion"}},
-            {500, 1.4f, 20, 0.2f, {"double_points", "slow_motion", "multi_fruit"}},
-            // Add more levels...
-        };
-    }
-    
-    void updateLevelProgression() {
-        if (score >= levels[current_level].required_score) {
-            current_level++;
-            updateDifficulty();
-            spawnBonusFruits();
-            effect_manager.addEffect("level_up", WIDTH/2, HEIGHT/2);
-        }
-    }
-    
-    void handleMenuState() {
-        switch(menu_state) {
-            case MenuState::MAIN:
-                drawMainMenu();
-                break;
-            case MenuState::MODE_SELECT:
-                drawModeSelect();
-                break;
-            case MenuState::DIFFICULTY_SELECT:
-                drawDifficultySelect();
-                break;
-            // Add more menu states...
-        }
-    }
-    
-    void updateAchievements() {
-        checkForNewAchievements();
-        if (achievement_unlocked) {
-            showAchievementPopup();
-        }
-    }
-    
-    void saveGameState() {
-        nlohmann::json save_data;
-        player_profile.serialize(save_data["profile"]);
-        save_data["settings"] = {
-            {"difficulty", static_cast<int>(difficulty)},
-            {"sound_enabled", sound_enabled},
-            {"tutorial_completed", tutorial_completed}
-        };
-        std::ofstream("save_data.json") << save_data.dump(4);
-    }
-    
-    void loadGameState() {
-        if (std::ifstream file("save_data.json"); file.is_open()) {
-            nlohmann::json save_data;
-            file >> save_data;
-            if (save_data.contains("profile")) {  // 檢查是否存在 profile 鍵
-                player_profile.deserialize(save_data["profile"]);
-            }
-            // ... rest of loading code ...
-        }
-    }
-    
-    void updateDailyChallenge() {
-        if (daily_challenge.isActive()) {
-            if (checkDailyChallengeComplete()) {
-                awardDailyChallengeReward();
-            }
-        }
-    }
-    
-    void drawLeaderboard() {
-        // Draw top 10 scores
-        const auto& scores = high_score_manager.getHighScores();
-        int y_pos = 100;
-        for (size_t i = 0; i < std::min(scores.size(), size_t(10)); ++i) {
-            drawText(font, std::to_string(i+1) + ". " + std::to_string(scores[i]),
-                    WIDTH/2, y_pos, FRUIT_THEME.text);
-            y_pos += 40;
-        }
-    }
-    
-    void updatePowerUps() {
-        for (auto& powerup : active_powerups) {
-            powerup.update(dt);
-            if (powerup.isActive()) {
-                applyPowerUpEffect(powerup);
-            }
-        }
-    }
-    
-    void checkCombo() {
-        if (last_match_time > 0 && 
-            current_time - last_match_time < COMBO_WINDOW) {
-            current_combo++;
-            score_multiplier = std::min(2.0f + current_combo * 0.5f, 5.0f);
-        } else {
-            current_combo = 0;
-            score_multiplier = 1.0f;
-        }
-    }
-
-public:
-    void multiplyScore(float multiplier) {
-        score *= multiplier;
-    }
-    
-    void setTimeScale(float scale) {
-        time_scale = scale;
-    }
-    
-    void boostCombo() {
-        combo_system.addBonus();
-    }
-    
-    void startTutorial() {
-        tutorial.startTutorial();
-        state = GameState::TUTORIAL;
-    }
-    
-    void setDifficulty(Difficulty diff) {
-        difficulty = diff;
-        updateDifficulty();
-    }
-    
-    void saveProgress() {
-        saveGameState();
-        high_score_manager.saveHighScores();
-    }
-
-    void spawnSpecialFruits() {
-        // 實作 spawnSpecialFruits
-    }
-
-    void checkForNewAchievements() {
-        // 實作 checkForNewAchievements
-    }
-
-    void showAchievementPopup() {
-        // 實作 showAchievementPopup
-    }
-
-    void drawText(TTF_Font* font, const std::string& text, int x, int y, Color color) {
-        // 實作 drawText
-    }
-
-    void drawMainMenu() {
-        // 實作 drawMainMenu
-    }
-
-    void drawModeSelect() {
-        // 實作 drawModeSelect
-    }
-
-    void drawDifficultySelect() {
-        // 實作 drawDifficultySelect
-    }
-
-    bool checkDailyChallengeComplete() {
-        // 實作 checkDailyChallengeComplete
-        return false;
-    }
-
-    void awardDailyChallengeReward() {
-        // 實作 awardDailyChallengeReward
-    }
-
-    // ... existing methods ...
-
+private:
     SDL_Window* window;
     SDL_Renderer* renderer;
     TTF_Font* font;
-    GameState state;
-    int score;
-    int current_fruit_index;
-    bool all_fruits_falling;
-    std::vector<FallingFruit*> falling_fruits;
-    std::vector<Basket*> baskets;
-    Button* start_button;
-    Button* quit_button;
-    Button* play_again_button;
-    GameMode current_mode;
-    ComboSystem combo_system;
-    EffectManager effect_manager;
-    HighScoreManager high_score_manager;
-    PowerUpManager powerup_manager;
-    std::vector<Achievement> achievements;
-    float time_remaining;
-    int level;
-    float difficulty_multiplier;
-
-private:
-    // Add new member variables
-    UIManager* ui_manager;
-    bool dark_mode = true;
-    float ui_scale = 1.0f;
-    bool sound_enabled = true; // 加入 sound_enabled 成員變數
-    float last_match_time = 0; // 加入 last_match_time 成員變數
-    float current_time = 0; // 加入 current_time 成員變數
-    const float COMBO_WINDOW = 2.0f; // 加入 COMBO_WINDOW 成員變數
-    int current_combo = 0; // 加入 current_combo 成員變數
-    float score_multiplier = 1.0f; // 加入 score_multiplier 成員變數
-    std::vector<PowerUp> active_powerups; // 加入 active_powerups 成員變數
-    Theme current_theme; // 加入 current_theme 成員變數
-    const Theme MODERN_LIGHT_THEME = {
-        // 初始化 MODERN_LIGHT_THEME
-    };
-
-    float fall_speed_multiplier = 1.0f; // 定義 fall_speed_multiplier
-    std::vector<std::string> tutorial_steps; // 定義 tutorial_steps
-    int current_level = 0; // 定義 current_level
-    bool achievement_unlocked = false; // 定義 achievement_unlocked
-    std::vector<ModernButton*> menu_buttons; // Add missing member variables
-    float dt;  // Add dt as class member
-
-    void createModernUI() {
-        // Create modern buttons
-        int button_width = 200 * ui_scale;
-        int button_height = 50 * ui_scale;
-        int start_y = HEIGHT / 2 - 100;
-        
-        menu_buttons = {
-            new ModernButton(WIDTH/2 - button_width/2, start_y, 
-                           button_width, button_height, 
-                           "Play", MODERN_DARK_THEME.primary),
-            new ModernButton(WIDTH/2 - button_width/2, start_y + 70, 
-                           button_width, button_height, 
-                           "Settings", MODERN_DARK_THEME.secondary),
-            new ModernButton(WIDTH/2 - button_width/2, start_y + 140, 
-                           button_width, button_height, 
-                           "Quit", MODERN_DARK_THEME.error)
-        };
-    }
-
-    void drawModernUI() {
-        // Draw background with gradient
-        drawGradientBackground();
-        
-        // Draw game title with shadow
-        drawModernTitle();
-        
-        // Draw buttons with hover effects
-        for (auto& button : menu_buttons) {
-            button->draw(renderer, font);
-        }
-        
-        // Draw modern HUD elements
-        if (state == PLAYING) {
-            drawModernHUD();
-        }
-    }
-
-    void drawModernHUD() {
-        // Draw score panel
-        drawPanel(10, 10, 200, 50, "Score: " + std::to_string(score));
-        
-        // Draw combo meter
-        drawComboMeter();
-        
-        // Draw power-up indicators
-        drawPowerUpIndicators();
-        
-        // Draw progress bar
-        drawProgressBar();
-    }
-
-    void drawGradientBackground() {
-        // Implement vertical gradient background
-        Color top_color = dark_mode ? DARK_PRIMARY : LIGHT_PRIMARY;
-        Color bottom_color = dark_mode ? DARK_SECONDARY : LIGHT_SECONDARY;
-        // Draw gradient...
-    }
-
-    void drawPanel(int x, int y, int w, int h, const std::string& text) {
-        // Draw modern semi-transparent panel with blur
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer, 
-            DARK_SECONDARY.r, DARK_SECONDARY.g, DARK_SECONDARY.b, 200);
-        
-        // Draw rounded rectangle
-        drawRoundedRect(renderer, {x, y, w, h}, 10, DARK_SECONDARY);
-        
-        // Draw text
-        drawText(font, text, x + w/2, y + h/2, TEXT_PRIMARY);
-    }
-
-    void applyPowerUpEffect(const PowerUp& powerup) {
-        // 實作 applyPowerUpEffect
-    }
-
-    void drawModernTitle() {
-        // 實作 drawModernTitle
-    }
-
-    void drawRoundedRect(SDL_Renderer* renderer, SDL_Rect rect, int radius, Color color) {
-        // Simple implementation for now
-        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-        SDL_RenderFillRect(renderer, &rect);
-    }
-
-    void drawComboMeter() {
-        if (current_combo > 0) {
-            drawPanel(WIDTH - 210, 10, 200, 50, 
-                     "Combo: " + std::to_string(current_combo) + "x");
-        }
-    }
-
-    void drawPowerUpIndicators() {
-        int x = 10;
-        int y = HEIGHT - 60;
-        for (const auto& powerup : active_powerups) {
-            if (powerup.isActive()) {
-                drawPanel(x, y, 100, 50, powerup.getType());
-                x += 110;
-            }
-        }
-    }
-
-    void drawProgressBar() {
-        int barWidth = WIDTH - 100;
-        int barHeight = 20;
-        int x = 50;
-        int y = HEIGHT - 30;
-        
-        // Background
-        SDL_Rect bgRect = {x, y, barWidth, barHeight};
-        drawRoundedRect(renderer, bgRect, 5, DARK_SECONDARY);
-        
-        // Progress
-        float progress = (float)score / (float)levels[current_level].required_score;
-        SDL_Rect progressRect = {x, y, (int)(barWidth * progress), barHeight};
-        drawRoundedRect(renderer, progressRect, 5, ACCENT_BLUE);
-    }
-
-public:
-    void toggleDarkMode() {
-        dark_mode = !dark_mode;
-        updateTheme();
-    }
-
-    void updateTheme() {
-        current_theme = dark_mode ? MODERN_DARK_THEME : MODERN_LIGHT_THEME;
-        // Update UI elements...
-    }
+    bool running;
+    std::unique_ptr<State> current_state;
+    // ...existing code...
 };
 
 // 添加 Color 到 SDL_Color 的轉換函式
@@ -1489,6 +1015,249 @@ SDL_Color toSDLColor(const Color& color) {
     return SDL_Color{ static_cast<Uint8>(color.r), static_cast<Uint8>(color.g), static_cast<Uint8>(color.b), static_cast<Uint8>(color.a) };
 }
 
+class State {
+public:
+    virtual ~State() = default;
+    virtual void handleEvent(Game& game, SDL_Event& event) = 0;
+    virtual void update(Game& game, float dt) = 0;
+    virtual void draw(Game& game) = 0;
+protected:
+    State() = default;
+};
+
+class MenuState : public State {
+public:
+    MenuState(Game& game) {
+        // 初始化按鈕
+        start_button = std::make_unique<ModernButton>(WIDTH / 2 - 100, HEIGHT / 2 - 50, 200, 50, "Start Game", FRUIT_THEME.primary);
+        quit_button = std::make_unique<ModernButton>(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Quit", FRUIT_THEME.error);
+    }
+
+    void handleEvent(Game& game, SDL_Event& event) override {
+        if (event.type == SDL_MOUSEBUTTONDOWN) {
+            int x, y;
+            SDL_GetMouseState(&x, &y);
+            if (start_button->isClicked(x, y)) {
+                game.changeState(std::make_unique<PlayingState>(game));
+            } else if (quit_button->isClicked(x, y)) {
+                game.quit();
+            }
+        }
+        
+    }
+
+    void update(Game& game, float dt) override {
+        // ...可能的動畫更新...
+    }
+
+    void draw(Game& game) override {
+        SDL_SetRenderDrawColor(game.getRenderer(), FRUIT_THEME.background.r, FRUIT_THEME.background.g, FRUIT_THEME.background.b, 255);
+        SDL_RenderClear(game.getRenderer());
+
+        // 繪製標題
+        SDL_Surface* title_surface = TTF_RenderText_Solid(game.font, "Fruit Basket Sorter", {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
+        SDL_Texture* title_texture = SDL_CreateTextureFromSurface(game.getRenderer(), title_surface);
+        int title_width, title_height;
+        SDL_QueryTexture(title_texture, NULL, NULL, &title_width, &title_height);
+        SDL_Rect title_rect = {WIDTH / 2 - title_width / 2, HEIGHT / 4, title_width, title_height};
+        SDL_RenderCopy(game.getRenderer(), title_texture, NULL, &title_rect);
+        SDL_FreeSurface(title_surface);
+        SDL_DestroyTexture(title_texture);
+
+        // 繪製按鈕
+        start_button->draw(game.getRenderer(), game.font);
+        quit_button->draw(game.getRenderer(), game.font);
+    }
+
+private:
+    std::unique_ptr<ModernButton> start_button;
+    std::unique_ptr<ModernButton> quit_button;
+};
+
+// 定義新的 PlayingState，將遊戲邏輯移入
+class PlayingState : public State {
+public:
+    PlayingState(Game& game) {
+        initializeFruits();
+        initializeBaskets();
+    }
+
+    void handleEvent(Game& game, SDL_Event& event) override {
+        if (event.type == SDL_MOUSEBUTTONDOWN) {
+            int x, y;
+            SDL_GetMouseState(&x, &y);
+            handleClick(game, x, y);
+        }
+        // 處理其他事件
+        
+    }
+
+    void update(Game& game, float dt) override {
+        // 更新遊戲邏輯
+        updateFruits(dt);
+        updatePowerUps(dt);
+        // 更新計時器等
+        
+    }
+
+    void draw(Game& game) override {
+        // 清屏
+        SDL_SetRenderDrawColor(game.getRenderer(), FRUIT_THEME.background.r, FRUIT_THEME.background.g, FRUIT_THEME.background.b, 255);
+        SDL_RenderClear(game.getRenderer());
+
+        // 繪製遊戲元素
+        drawFruits(game.getRenderer());
+        drawBaskets(game.getRenderer());
+        game.hud_manager->draw();
+
+        
+    }
+
+private:
+    void handleClick(Game& game, int x, int y) {
+        // 處理點擊事件，例如檢查籃子是否被點擊
+        for (const auto& basket : baskets) {
+            if (basket->isClicked(x, y)) {
+                if (current_fruit && basket->getFruit().type == current_fruit->getFruit().type) {
+                    // 匹配成功，進行處理
+                    // ...existing code...
+                }
+                break;
+            }
+        }
+    }
+
+    void updateFruits(float dt) {
+        // 更新水果的位置和狀態
+        for (auto& fruit : falling_fruits) {
+            fruit->update(dt);
+            if (fruit->getY() > HEIGHT) {
+                // 處理水果落地
+                // ...existing code...
+            }
+        }
+    }
+
+    void drawFruits(SDL_Renderer* renderer) {
+        // 繪製掉落的水果
+        for (const auto& fruit : falling_fruits) {
+            fruit->draw(renderer);
+        }
+    }
+
+    void drawBaskets(SDL_Renderer* renderer) {
+        // 繪製籃子
+        for (const auto& basket : baskets) {
+            basket->draw(renderer);
+        }
+    }
+
+    void initializeFruits() {
+        // 初始化水果
+        // ...existing code...
+    }
+
+    void initializeBaskets() {
+        // 初始化籃子
+        // ...existing code...
+    }
+
+    // 使用智能指標的容器
+    std::vector<std::unique_ptr<FallingFruit>> falling_fruits;
+    std::vector<std::unique_ptr<Basket>> baskets;
+    FallingFruit* current_fruit = nullptr;
+    // ...existing code...
+};
+
+// 定義 GameOverState
+class GameOverState : public State {
+public:
+    GameOverState(Game& game, int final_score) : score(final_score) {
+        // 初始化按鈕
+        play_again_button = std::make_unique<ModernButton>(WIDTH / 2 - 100, HEIGHT / 2 + 50, 200, 50, "Play Again", FRUIT_THEME.primary);
+    }
+
+    void handleEvent(Game& game, SDL_Event& event) override {
+        if (event.type == SDL_MOUSEBUTTONDOWN) {
+            int x, y;
+            SDL_GetMouseState(&x, &y);
+            if (play_again_button->isClicked(x, y)) {
+                game.changeState(std::make_unique<PlayingState>(game));
+            }
+        }
+        
+    }
+
+    void update(Game& game, float dt) override {
+        // ...可能的動畫更新...
+    }
+
+    void draw(Game& game) override {
+        SDL_SetRenderDrawColor(game.getRenderer(), FRUIT_THEME.background.r, FRUIT_THEME.background.g, FRUIT_THEME.background.b, 255);
+        SDL_RenderClear(game.getRenderer());
+
+        // 繪製 "Game Over" 文字
+        SDL_Surface* game_over_surface = TTF_RenderText_Solid(game.font, "Game Over!", {FRUIT_THEME.text.r, FRUIT_THEME.text.g, FRUIT_THEME.text.b});
+        SDL_Texture* game_over_texture = SDL_CreateTextureFromSurface(game.getRenderer(), game_over_surface);
+        int game_over_width, game_over_height;
+        SDL_QueryTexture(game_over_texture, NULL, NULL, &game_over_width, &game_over_height);
+        SDL_Rect game_over_rect = {WIDTH / 2 - game_over_width / 2, HEIGHT / 4, game_over_width, game_over_height};
+        SDL_RenderCopy(game.getRenderer(), game_over_texture, NULL, &game_over_rect);
+        SDL_FreeSurface(game_over_surface);
+        SDL_DestroyTexture(game_over_texture);
+
+        // 繪製重新開始按鈕
+        play_again_button->draw(game.getRenderer(), game.font);
+    }
+
+private:
+    int score;
+    std::unique_ptr<ModernButton> play_again_button;
+};
+
+// 添加日誌記錄功能
+void logSDLError(const std::string& msg) {
+    std::cerr << msg << " 錯誤： " << SDL_GetError() << std::endl;
+}
+
+// 在需要的地方添加日誌，例如：
+SDL_Texture* loadTexture(SDL_Renderer* renderer, const std::string& path) {
+    SDL_Surface* surface = IMG_Load(path.c_str());
+    if (!surface) {
+        logSDLError("加載圖片失敗：" + path);
+        return nullptr;
+    }
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_FreeSurface(surface);
+    if (!texture) {
+        logSDLError("創建紋理失敗：" + path);
+    }
+    return texture;
+}
+
+// 更新 FallingFruit 的 draw 函數，使用錯誤處理
+void FallingFruit::draw(SDL_Renderer* renderer) {
+    if (!texture) {
+        texture = loadTexture(renderer, fruit.sprite_path);
+        if (!texture) return;
+    }
+    SDL_Rect dest_rect = { static_cast<int>(x), static_cast<int>(y), width, height };
+    SDL_RenderCopyEx(renderer, texture, nullptr, &dest_rect, rotation, nullptr, SDL_FLIP_NONE);
+}
+
+// 在 Game 構造函數中，初始化初始狀態
+Game::Game() : running(true) {
+    // ...existing initialization code...
+
+    current_state = std::make_unique<MenuState>();
+}
+
+// 實現 Game::changeState() 方法
+void Game::changeState(std::unique_ptr<State> new_state) {
+    current_state = std::move(new_state);
+}
+
+// 修改 main 函數中的遊戲循環
 int main(int argc, char* args[]) {
     srand(static_cast<unsigned int>(time(0)));
     Game game;
