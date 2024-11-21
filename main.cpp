@@ -19,6 +19,12 @@
 #include <unordered_map>
 #include <memory>
 
+// Forward declarations
+class Game;
+class State;
+class UIManager;
+class PlayingState;
+
 // Add new game states
 enum GameState {
     MENU,
@@ -375,9 +381,10 @@ public:
         for (auto it = active_powerups.begin(); it != active_powerups.end();) {
             it->second -= dt;
             if (it->second <= 0) {
-                deactivateEffect(it->first);
+                deactivateEffect(it->first); // Actually call the deactivate lambda
                 it = active_powerups.erase(it);
             } else {
+                activateEffect(it->first); // Call activate lambda while power-up is active
                 ++it;
             }
         }
@@ -881,6 +888,33 @@ public:
                              radius, color.r, color.g, color.b, color.a);
     }
 
+    TTF_Font* getFont(const std::string& name) {
+        auto it = fonts.find(name);
+        if (it != fonts.end()) {
+            return it->second.get();
+        }
+        return nullptr;
+    }
+
+    void drawText(const std::string& text, int x, int y, Color color) {
+        TTF_Font* font = getFont("regular");
+        if (!font) return;
+        
+        SDL_Color sdl_color = toSDLColor(color);
+        SDL_Surface* surface = TTF_RenderText_Solid(font, text.c_str(), sdl_color);
+        if (!surface) return;
+        
+        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+        SDL_FreeSurface(surface);
+        if (!texture) return;
+        
+        int text_width, text_height;
+        SDL_QueryTexture(texture, NULL, NULL, &text_width, &text_height);
+        SDL_Rect dest = {x, y, text_width, text_height};
+        SDL_RenderCopy(renderer, texture, NULL, &dest);
+        SDL_DestroyTexture(texture);
+    }
+
 private:
     void loadFonts() {
         fonts["regular"].reset(TTF_OpenFont("assets/fonts/Roboto-Regular.ttf", 24));
@@ -1145,6 +1179,8 @@ public:
 
     std::unique_ptr<HUDManager> hud_manager;
 
+    UIManager& getUIManager() const { return *ui_manager; }
+
 private:
     std::unique_ptr<SDL_Window, SDL_Deleter> window;
     std::unique_ptr<SDL_Renderer, SDL_Deleter> renderer;
@@ -1300,7 +1336,21 @@ private:
     }
 
     void updatePowerUps(float dt) {
-        power_ups.update(dt, game);
+        auto activate = [this](const std::string& type) {
+            if (type == "double_points") {
+                score_multiplier *= 2;
+            }
+            // ...other power-up activations...
+        };
+
+        auto deactivate = [this](const std::string& type) {
+            if (type == "double_points") {
+                score_multiplier /= 2;
+            }
+            // ...other power-up deactivations...
+        };
+
+        power_ups.update(dt, activate, deactivate);
     }
 
     void drawFruits(SDL_Renderer* renderer) {
@@ -1338,15 +1388,15 @@ private:
     // Use container of smart pointers
     std::vector<std::unique_ptr<FallingFruit>> falling_fruits;
     std::vector<std::unique_ptr<Basket>> baskets;
-    FallingFruit* current_fruit = nullptr;
+    std::unique_ptr<FallingFruit> current_fruit;
     // ...existing code...
 
     Game& game;
     int score;
     ComboSystem combo_system;
-    std::unique_ptr<FallingFruit> current_fruit;
     PowerUpManager power_ups;
     EffectManager effects;
+    float score_multiplier;
 
     // Add missing methods
     void multiplyScore(float factor) {
